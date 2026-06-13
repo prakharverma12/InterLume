@@ -2,9 +2,11 @@ const DB_NAME = 'smooth-slomo-models'
 const STORE   = 'models'
 const VERSION = 1
 
+// rife_v4.25_lite.onnx — exported from Practical-RIFE v4.25 lite weights via
+// scripts/export_rife_no_ensemble.py. No ensemble (v4.21+ dropped it), 573 ONNX nodes.
 export const MODEL_URLS = {
-  'rife_fp16.onnx': 'https://huggingface.co/yuvraj108c/rife-onnx/resolve/main/rife49_ensemble_True_scale_1_sim.onnx',
-  'rife_int8.onnx': 'https://huggingface.co/yuvraj108c/rife-onnx/resolve/main/rife48_ensemble_True_scale_1_sim.onnx',
+  'rife_fp16.onnx': '/models/rife_v4.25_lite.onnx',
+  'rife_int8.onnx': '/models/rife_v4.25_lite.onnx',
 }
 
 function openDB() {

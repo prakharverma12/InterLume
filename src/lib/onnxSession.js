@@ -22,10 +22,17 @@ export async function createSession(modelBuffer, onLog) {
   }
 
   onLog(`Model loaded. Inputs: ${session.inputNames.join(', ')}`)
+  const gpuDevice = ort.env.webgpu?.device
+  onLog(gpuDevice
+    ? `Execution provider: WebGPU (${gpuDevice.label ?? 'unlabelled'})`
+    : 'WARNING: WebGPU EP unavailable — running on WASM (expect 10-50× slower inference)'
+  )
   onLog('Running warm-up inference...')
 
-  // Pre-compile WGSL shaders — prevents 300-800ms stall on first real batch
-  const H = 64, W = 64
+  // Pre-compile WGSL shaders — prevents 300-800ms stall on first real batch.
+  // Minimum 128×128: the rife_v4.25_lite architecture uses scale=32 internally,
+  // which requires H/32 ≥ 4 (i.e. H ≥ 128) to round-trip through conv/deconv correctly.
+  const H = 128, W = 128
   const dummyData = new Float32Array(3 * H * W)
   const dummy = new ort.Tensor('float32', dummyData, [1, 3, H, W])
   const tStep = new ort.Tensor('float32', new Float32Array([0.5]), [1])

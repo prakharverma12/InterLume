@@ -16,7 +16,7 @@ export default function UploadZone({ onStart }) {
   const fileInputRef = useRef(null)
 
   useEffect(() => {
-    detectHardwareTier().then(setHwTier)
+    detectHardwareTier((...args) => console.log('[hw]', ...args)).then(setHwTier)
     refreshCache()
   }, [])
 
@@ -153,7 +153,7 @@ export default function UploadZone({ onStart }) {
                 <line x1="12" y1="16" x2="12.01" y2="16"/>
               </svg>
               <span>
-                Model auto-downloads on first run (~21.5 MB)
+                Model auto-downloads on first run (~21.6 MB)
               </span>
             </div>
           )}

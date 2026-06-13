@@ -1,7 +1,10 @@
+// rife_v4.25_lite uses scale=32 internally: each IFBlock runs two stride-2 convolutions
+// then a ConvTranspose + PixelShuffle. The spatial round-trip is exact only when
+// H/32 is divisible by 4, i.e. H must be a multiple of 128.
 export function paddedDims(w, h) {
   return {
-    paddedW: Math.ceil(w / 32) * 32,
-    paddedH: Math.ceil(h / 32) * 32,
+    paddedW: Math.ceil(w / 128) * 128,
+    paddedH: Math.ceil(h / 128) * 128,
   }
 }
 
@@ -112,48 +115,50 @@ export function resizeGLBuffers(ctx, paddedW, paddedH, origW, origH) {
   gl.bindFramebuffer(gl.FRAMEBUFFER, null)
 
   // Pre-allocate CPU buffers
-  ctx.pixels   = new Uint8Array(paddedW * paddedH * 4)
-  ctx.rgbaBuf  = new Uint8ClampedArray(origW * origH * 4)
-  ctx.paddedW  = paddedW
-  ctx.paddedH  = paddedH
-  ctx.origW    = origW
-  ctx.origH    = origH
+  ctx.pixels    = new Uint8Array(paddedW * paddedH * 4)
+  ctx.pixelsU32 = new Uint32Array(ctx.pixels.buffer)  // same memory, one 32-bit read per pixel
+  ctx.rgbaBuf   = new Uint8ClampedArray(origW * origH * 4)
+  ctx.paddedW   = paddedW
+  ctx.paddedH   = paddedH
+  ctx.origW     = origW
+  ctx.origH     = origH
+  // Two pre-allocated CHW buffers — alternated per pair so the cached previous-frame
+  // buffer is never overwritten while it's still held by the ORT tensor.
+  const chwSize = 3 * paddedW * paddedH
+  ctx.chwBuf = [new Float32Array(chwSize), new Float32Array(chwSize)]
 }
 
-// Extracts a Float32Array in CHW RGB layout, normalized to [0,1], padded to paddedW x paddedH.
+// Renders videoFrame into destBuf as a CHW float32 [3, paddedH, paddedW] array, values in [0,1].
+// destBuf must be a pre-allocated Float32Array of length 3*paddedW*paddedH (use ctx.chwBuf[slot]).
 // resizeGLBuffers must be called before the first use.
-export async function frameToFloatCHW(videoFrame, paddedW, paddedH, ctx) {
+export async function frameToFloatCHW(videoFrame, paddedW, paddedH, ctx, destBuf) {
   const { gl, tex, fbo, uOrigSize, uPadSize } = ctx
   const origW = videoFrame.displayWidth
   const origH = videoFrame.displayHeight
 
-  // Upload VideoFrame as texture
   gl.bindTexture(gl.TEXTURE_2D, tex)
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, videoFrame)
-
   gl.uniform2f(uOrigSize, origW, origH)
   gl.uniform2f(uPadSize, paddedW, paddedH)
-
-  // Bind input texture back as uniform
   gl.activeTexture(gl.TEXTURE0)
   gl.bindTexture(gl.TEXTURE_2D, tex)
-
   gl.bindFramebuffer(gl.FRAMEBUFFER, fbo)
   gl.drawArrays(gl.TRIANGLES, 0, 6)
-
-  // Read back into pre-allocated buffer
   gl.readPixels(0, 0, paddedW, paddedH, gl.RGBA, gl.UNSIGNED_BYTE, ctx.pixels)
   gl.bindFramebuffer(gl.FRAMEBUFFER, null)
 
-  // Convert interleaved RGBA uint8 → planar CHW float32 [3, H, W]
-  const chw = new Float32Array(3 * paddedH * paddedW)
+  // Uint32 view: one 32-bit read per pixel instead of four separate byte reads.
+  // Little-endian layout: bits 0-7 = R, 8-15 = G, 16-23 = B, 24-31 = A.
+  const src = ctx.pixelsU32
   const planeSize = paddedH * paddedW
+  const inv255 = 1 / 255
   for (let i = 0; i < planeSize; i++) {
-    chw[i]                 = ctx.pixels[i * 4]     / 255.0  // R
-    chw[planeSize + i]     = ctx.pixels[i * 4 + 1] / 255.0  // G
-    chw[2 * planeSize + i] = ctx.pixels[i * 4 + 2] / 255.0  // B
+    const px = src[i]
+    destBuf[i]                 = (px         & 0xFF) * inv255
+    destBuf[planeSize + i]     = ((px >>> 8)  & 0xFF) * inv255
+    destBuf[2 * planeSize + i] = ((px >>> 16) & 0xFF) * inv255
   }
-  return chw
+  return destBuf
 }
 
 // Converts a CHW float32 tensor output [3, H, W] back to a VideoFrame at originalW x originalH.

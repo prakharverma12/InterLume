@@ -40,7 +40,9 @@ function onnxCopyPlugin() {
       const destDir = resolve(outDir, 'onnx-wasm')
       mkdirSync(destDir, { recursive: true })
       for (const file of readdirSync(srcDir)) {
-        if (/^ort-wasm-simd-threaded.*\.(wasm|mjs)$/.test(file)) {
+        // Skip jspi variant — requires experimental browser flag, not yet in stable Chrome/Firefox.
+        // jsep (WebGPU) + asyncify + base cover all supported browsers.
+        if (/^ort-wasm-simd-threaded.*\.(wasm|mjs)$/.test(file) && !file.includes('.jspi.')) {
           copyFileSync(resolve(srcDir, file), resolve(destDir, file))
         }
       }

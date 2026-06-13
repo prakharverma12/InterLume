@@ -44,6 +44,18 @@ async function handleInit({ hwTier }) {
     const modelKey = cfg.modelFile
 
     glCtx = createGLContext()
+
+    try {
+      const gpuAdapter = await navigator.gpu?.requestAdapter()
+      if (gpuAdapter) {
+        const info = gpuAdapter.info ?? {}
+        const label = [info.vendor, info.architecture, info.device || info.description]
+          .filter(Boolean).join(' / ') || 'unknown'
+        log(`GPU: ${label}`)
+        log(`shader-f16: ${gpuAdapter.features.has('shader-f16')} | maxBufferSize: ${(gpuAdapter.limits.maxBufferSize / 1024 ** 3).toFixed(1)} GB`)
+      }
+    } catch {}
+
     log(`Hardware tier: ${hwTier} — batch size ${batchSize}`)
 
     let modelBuffer = await loadModel(modelKey)
@@ -127,6 +139,22 @@ async function handleProcessFile({ file, slowmoFactor = 0.25 }) {
 
     // One-time GPU buffer setup for this video's dimensions
     resizeGLBuffers(glCtx, paddedW, paddedH, origW, origH)
+
+    // Pre-compile WGSL shaders at the actual video resolution.
+    // The session warm-up in onnxSession.js used 128×128 dummy tensors; RIFE's
+    // convolution kernels generate different WGSL variants per spatial size,
+    // so the first real pair would stall on shader compilation without this.
+    log(`Pre-compiling shaders for ${paddedW}×${paddedH}...`)
+    progress(15, 'Compiling shaders...')
+    const tWarmup = performance.now()
+    {
+      const d0 = new ort.Tensor('float32', new Float32Array(3 * paddedW * paddedH), [1, 3, paddedH, paddedW])
+      const dt = new ort.Tensor('float32', new Float32Array([0.5]), [1])
+      await session.run(buildInputMap(session.inputNames, d0, d0, dt))
+      d0.dispose()
+      dt.dispose()
+    }
+    log(`Shader warm-up complete: ${Math.round(performance.now() - tWarmup)}ms`)
 
     // Source FPS from track timescale + sample durations
     const sampleDurationUs = Math.round(
@@ -264,8 +292,11 @@ async function handleProcessFile({ file, slowmoFactor = 0.25 }) {
     // Consumer: process pairs one by one as decoded frames arrive
     const consume = async () => {
       let prevFrame = null
-      let prevChw = null
       let outputFrameIdx = 0
+      // Alternate between the two pre-allocated CHW slots so we never overwrite
+      // the buffer that the current ORT tensor still holds a reference to.
+      let writeSlot = 0   // slot to write frameB's CHW into this pair
+      let prevSlot  = -1  // slot holding frameA's CHW from the previous pair (-1 = none)
       for (let fi = 0; fi < totalFrames; fi++) {
         await waitForFrame()
         if (decoderError) throw new Error(decoderError)
@@ -273,8 +304,19 @@ async function handleProcessFile({ file, slowmoFactor = 0.25 }) {
         if (prevFrame !== null) {
           if (fi < 3) dbg(`pair[${fi - 1}]: A.ts=${prevFrame.timestamp} B.ts=${frame.timestamp} outIdx=${outputFrameIdx}`)
           const tPair = performance.now()
-          const result = await processPair(prevFrame, frame, encoder, origW, origH, paddedW, paddedH, outputFrameDurationUs, timesteps, prevChw, outputFrameIdx)
-          prevChw = result.chw
+
+          // frameA: reuse the previous pair's frameB CHW if available, else compute fresh
+          const chw0 = prevSlot >= 0
+            ? glCtx.chwBuf[prevSlot]
+            : await frameToFloatCHW(prevFrame, paddedW, paddedH, glCtx, glCtx.chwBuf[writeSlot])
+          if (prevSlot < 0) writeSlot = 1 - writeSlot  // consumed the write slot for A; flip
+
+          // frameB: always computed into the current write slot
+          const chw1 = await frameToFloatCHW(frame, paddedW, paddedH, glCtx, glCtx.chwBuf[writeSlot])
+          prevSlot  = writeSlot
+          writeSlot = 1 - writeSlot
+
+          const result = await processPair(prevFrame, frame, encoder, origW, origH, paddedW, paddedH, outputFrameDurationUs, timesteps, chw0, chw1, outputFrameIdx)
           outputFrameIdx = result.nextIdx
           pairTimeSum += performance.now() - tPair
           prevFrame.close()
@@ -326,19 +368,14 @@ async function handleProcessFile({ file, slowmoFactor = 0.25 }) {
 }
 
 // ─── PAIR PROCESSOR ──────────────────────────────────────────────────────────
-// precomputedChw0: cached CHW float array for frameA (from previous pair's frameB).
-//                 If provided, skips the GPU→CPU readback for frameA entirely.
-// Returns chw1 (frameB's CHW) so the caller can cache it as the next pair's chw0.
+// chw0/chw1 are pre-populated Float32Arrays from ctx.chwBuf — no allocation here.
 
-async function processPair(frameA, frameB, encoder, origW, origH, paddedW, paddedH, durationUs, timesteps, precomputedChw0 = null, startOutputIdx = 0) {
+async function processPair(frameA, frameB, encoder, origW, origH, paddedW, paddedH, durationUs, timesteps, chw0, chw1, startOutputIdx = 0) {
   let f0t = null
   let f1t = null
   const outputFrames = []
 
   try {
-    const chw0 = precomputedChw0 ?? await frameToFloatCHW(frameA, paddedW, paddedH, glCtx)
-    const chw1 = await frameToFloatCHW(frameB, paddedW, paddedH, glCtx)
-
     f0t = new ort.Tensor('float32', chw0, [1, 3, paddedH, paddedW])
     f1t = new ort.Tensor('float32', chw1, [1, 3, paddedH, paddedW])
 
@@ -349,17 +386,20 @@ async function processPair(frameA, frameB, encoder, origW, origH, paddedW, padde
     encoder.encode(remappedA)
     remappedA.close()
 
+    let inferenceMs = 0
     for (let ti = 0; ti < timesteps.length; ti++) {
       const t = timesteps[ti]
       const stepTensor = new ort.Tensor('float32', new Float32Array([t]), [1])
 
       let outputs
+      const tInfer = performance.now()
       try {
         const inputMap = buildInputMap(session.inputNames, f0t, f1t, stepTensor)
         outputs = await session.run(inputMap)
       } finally {
         stepTensor.dispose()
       }
+      inferenceMs += performance.now() - tInfer
 
       const outputName = session.outputNames[0]
       const outTensor = outputs[outputName]
@@ -380,7 +420,11 @@ async function processPair(frameA, frameB, encoder, origW, origH, paddedW, padde
       outTensor.dispose()
     }
 
-    return { chw: chw1, nextIdx: startOutputIdx + 1 + timesteps.length }
+    if (startOutputIdx < 12) {
+      dbg(`pair@${startOutputIdx}: inference=${Math.round(inferenceMs)}ms (${timesteps.length}×${Math.round(inferenceMs/timesteps.length)}ms/step)`)
+    }
+
+    return { nextIdx: startOutputIdx + 1 + timesteps.length }
 
   } finally {
     f0t?.dispose()
