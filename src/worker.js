@@ -8,6 +8,17 @@ import { createGLContext, paddedDims, resizeGLBuffers, frameToFloatCHW, floatCHW
 import { loadModel, fetchAndCacheModel, deleteModel } from './lib/modelStore.js'
 import { makeDbg } from './lib/debugLog.js'
 
+// Returns a High-Profile AVC codec string with the minimum level that fits
+// the given coded dimensions (H.264 macroblocks are 16×16).
+function avcCodec(w, h) {
+  const px = Math.ceil(w / 16) * 16 * Math.ceil(h / 16) * 16
+  if (px <= 414_720)  return 'avc1.64001e' // Level 3.0  ≤ 720×576
+  if (px <= 921_600)  return 'avc1.64001f' // Level 3.1  ≤ 1280×720
+  if (px <= 2_097_152) return 'avc1.640028' // Level 4.0  ≤ 1920×1080
+  if (px <= 2_228_224) return 'avc1.640029' // Level 4.1  ≤ 1920×1152
+  return 'avc1.640032'                      // Level 5.0  ≤ 4K
+}
+
 console.log('[worker] loaded')
 
 let session = null
@@ -156,7 +167,7 @@ async function handleProcessFile({ file, slowmoFactor = 0.25 }) {
       },
     })
     const tCodec = performance.now()
-    const decoderCodec = videoTrack.codec.startsWith('avc') ? videoTrack.codec : 'avc1.42001e'
+    const decoderCodec = videoTrack.codec.startsWith('avc') ? videoTrack.codec : avcCodec(origW, origH)
     const decoderConfig = {
       codec: decoderCodec,
       codedWidth: origW,
@@ -190,9 +201,10 @@ async function handleProcessFile({ file, slowmoFactor = 0.25 }) {
         decoderError = e.message
       },
     })
-    dbg(`VideoEncoder.configure: avc1.42001e ${origW}x${origH} ${inputFps}fps 8Mbps state-before=${encoder.state}`)
+    const encoderCodec = avcCodec(origW, origH)
+    dbg(`VideoEncoder.configure: ${encoderCodec} ${origW}x${origH} ${inputFps}fps 8Mbps state-before=${encoder.state}`)
     encoder.configure({
-      codec: 'avc1.42001e',
+      codec: encoderCodec,
       width: origW,
       height: origH,
       bitrate: 8_000_000,
