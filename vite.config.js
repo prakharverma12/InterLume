@@ -1,7 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import { viteStaticCopy } from 'vite-plugin-static-copy'
-import { createReadStream } from 'node:fs'
+import { createReadStream, copyFileSync, mkdirSync, readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 // Vite intercepts dynamic import() of .mjs files and runs them through its
@@ -26,16 +25,34 @@ function onnxWasmRawPlugin() {
   }
 }
 
+// Copies ONNX wasm+mjs files flat into dist/onnx-wasm after Rolldown finishes,
+// avoiding vite-plugin-static-copy's path-preservation bug with Vite 8.
+function onnxCopyPlugin() {
+  let outDir = 'dist'
+  return {
+    name: 'onnx-copy',
+    apply: 'build',
+    configResolved(config) {
+      outDir = config.build.outDir
+    },
+    writeBundle() {
+      const srcDir = resolve('node_modules/onnxruntime-web/dist')
+      const destDir = resolve(outDir, 'onnx-wasm')
+      mkdirSync(destDir, { recursive: true })
+      for (const file of readdirSync(srcDir)) {
+        if (/^ort-wasm-simd-threaded.*\.(wasm|mjs)$/.test(file)) {
+          copyFileSync(resolve(srcDir, file), resolve(destDir, file))
+        }
+      }
+    },
+  }
+}
+
 export default defineConfig({
   plugins: [
     react(),
     onnxWasmRawPlugin(),
-    viteStaticCopy({
-      targets: [
-        { src: 'node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded*.wasm', dest: 'onnx-wasm' },
-        { src: 'node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded*.mjs',  dest: 'onnx-wasm' },
-      ],
-    }),
+    onnxCopyPlugin(),
   ],
   server: {
     headers: {
