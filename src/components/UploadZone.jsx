@@ -65,8 +65,11 @@ export default function UploadZone({ onStart }) {
     <div className="upload-page">
       <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '24px', width: '100%' }}>
         <header className="upload-header">
-          <h1 className="logo">SmoothSlomo</h1>
-          <p className="tagline">Client-side 60fps interpolation — no upload, no backend.</p>
+          <h1 className="logo">
+            <span className="logo-neon-cyan">Inter-</span><span className="logo-neon-magenta">Lum<span className="logo-flicker">e</span></span>
+            <span className="logo-orbit-ball" aria-hidden="true" />
+          </h1>
+          <p className="tagline">On-device temporal frame synthesis · zero upload · fully private</p>
           <span className="secure-badge">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
               <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>

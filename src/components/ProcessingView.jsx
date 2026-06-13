@@ -27,7 +27,9 @@ export default function ProcessingView({ phase, progress, stage, logs, originalU
   return (
     <div className="processing-page">
       <div className="processing-card">
-        <h2 className="processing-title">SmoothSlomo</h2>
+        <h2 className="processing-title">
+          <span className="logo-neon-cyan" style={{fontSize:'inherit',letterSpacing:'inherit'}}>Inter-</span><span className="logo-neon-magenta" style={{fontSize:'inherit',letterSpacing:'inherit'}}>Lume</span>
+        </h2>
         <p className={`processing-stage${isComplete ? ' processing-stage--complete' : ''}`}>
           {displayStage}
         </p>

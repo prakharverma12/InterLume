@@ -66,7 +66,7 @@ export default function ResultView({ outputUrl, originalUrl, onReset }) {
     spawnParticles(e)
     const a = document.createElement('a')
     a.href = outputUrl
-    a.download = 'slowmo_60fps.mp4'
+    a.download = 'interlume_output.mp4'
     a.click()
   }
 
